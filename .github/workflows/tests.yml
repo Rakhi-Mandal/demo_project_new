@@ -17,11 +17,11 @@ on:
         required: true
         type: string
       browsers:
-        description: Comma-separated Playwright projects (chromium,msedge,firefox,webkit)
+        description: Comma-separated Playwright projects (chromium,firefox,webkit)
         required: true
         type: string
       request_id:
-        description: Unique ID from the caller, used to find this run via API
+        description: Unique ID from the dashboard request
         required: false
         type: string
 
@@ -49,7 +49,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ inputs.browsers }}
 
-      - name: Install Playwright browsers
+      - name: Install selected Playwright browsers
         if: steps.pw-cache.outputs.cache-hit != 'true'
         shell: bash
         env:
@@ -58,16 +58,10 @@ jobs:
           IFS=',' read -ra browsers <<< "$BROWSERS"
           for browser in "${browsers[@]}"; do
             browser="$(echo "$browser" | xargs)"
-            case "$browser" in
-              chromium) install_browser=chrome ;;
-              msedge) install_browser=msedge ;;
-              firefox|webkit) install_browser="$browser" ;;
-              *) echo "Unsupported browser project: $browser" >&2; exit 1 ;;
-            esac
-            npx playwright install --with-deps "$install_browser"
+            [[ -n "$browser" ]] && npx playwright install --with-deps "$browser"
           done
 
-      - name: Install Playwright system deps (cache hit)
+      - name: Install system dependencies for selected browsers
         if: steps.pw-cache.outputs.cache-hit == 'true'
         shell: bash
         env:
@@ -76,43 +70,34 @@ jobs:
           IFS=',' read -ra browsers <<< "$BROWSERS"
           for browser in "${browsers[@]}"; do
             browser="$(echo "$browser" | xargs)"
-            case "$browser" in
-              chromium) install_browser=chrome ;;
-              msedge) install_browser=msedge ;;
-              firefox|webkit) install_browser="$browser" ;;
-              *) echo "Unsupported browser project: $browser" >&2; exit 1 ;;
-            esac
-            npx playwright install-deps "$install_browser"
+            [[ -n "$browser" ]] && npx playwright install-deps "$browser"
           done
 
-      - name: Run selected modules
+      - name: Run selected modules and browsers
         shell: bash
         env:
           MODULES: ${{ inputs.modules }}
           BROWSERS: ${{ inputs.browsers }}
           PLAYWRIGHT_HTML_OPEN: never
+          PLAYWRIGHT_JUNIT_OUTPUT_NAME: reports/junit.xml
+          PLAYWRIGHT_JSON_OUTPUT_NAME: reports/results.json
         run: |
+          mkdir -p reports
           args=()
+
           IFS=',' read -ra folders <<< "$MODULES"
           for folder in "${folders[@]}"; do
             folder="$(echo "$folder" | xargs)"
             [[ -n "$folder" ]] && args+=("$folder")
           done
+
           IFS=',' read -ra browsers <<< "$BROWSERS"
           for browser in "${browsers[@]}"; do
             browser="$(echo "$browser" | xargs)"
             [[ -n "$browser" ]] && args+=("--project=$browser")
           done
-          npx playwright test "${args[@]}" --reporter=line,html,allure-playwright
 
-      - name: Generate Allure HTML report
-        if: ${{ !cancelled() }}
-        run: |
-          if [ -d allure-results ] && find allure-results -type f -print -quit | grep -q .; then
-            npx --yes allure-commandline@2 generate allure-results --clean -o allure-report
-          else
-            echo "No Allure result files were generated; skipping the HTML report."
-          fi
+          npx playwright test "${args[@]}" --reporter=html,junit,json,list
 
       - name: Upload HTML report
         if: ${{ !cancelled() }}
@@ -120,31 +105,23 @@ jobs:
         with:
           name: playwright-html-report
           path: playwright-report/
+          if-no-files-found: ignore
           retention-days: 14
 
-      - name: Upload Playwright test results
+      - name: Upload JUnit and JSON results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload traces, screenshots, and videos
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: playwright-test-results
           path: test-results/
           if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Upload Allure results
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: allure-results
-          path: allure-results/
           retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Upload Allure HTML report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: allure-html-report
-          path: allure-report/
-          retention-days: 14
-          if-no-files-found: ignore
