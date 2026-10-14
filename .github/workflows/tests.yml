@@ -1,0 +1,150 @@
+name: Regression tests
+run-name: Regression ${{ inputs.project_id }} ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: Project identifier
+        required: false
+        type: string
+      service_type:
+        description: Automation type
+        required: false
+        type: string
+      modules:
+        description: Comma-separated test folders (for example sanity/login,regression)
+        required: true
+        type: string
+      browsers:
+        description: Comma-separated Playwright projects (chromium,msedge,firefox,webkit)
+        required: true
+        type: string
+      request_id:
+        description: Unique ID from the caller, used to find this run via API
+        required: false
+        type: string
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Get Playwright version
+        id: pw
+        run: echo "version=$(npx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ inputs.browsers }}
+
+      - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          BROWSERS: ${{ inputs.browsers }}
+        run: |
+          IFS=',' read -ra browsers <<< "$BROWSERS"
+          for browser in "${browsers[@]}"; do
+            browser="$(echo "$browser" | xargs)"
+            case "$browser" in
+              chromium) install_browser=chrome ;;
+              msedge) install_browser=msedge ;;
+              firefox|webkit) install_browser="$browser" ;;
+              *) echo "Unsupported browser project: $browser" >&2; exit 1 ;;
+            esac
+            npx playwright install --with-deps "$install_browser"
+          done
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        shell: bash
+        env:
+          BROWSERS: ${{ inputs.browsers }}
+        run: |
+          IFS=',' read -ra browsers <<< "$BROWSERS"
+          for browser in "${browsers[@]}"; do
+            browser="$(echo "$browser" | xargs)"
+            case "$browser" in
+              chromium) install_browser=chrome ;;
+              msedge) install_browser=msedge ;;
+              firefox|webkit) install_browser="$browser" ;;
+              *) echo "Unsupported browser project: $browser" >&2; exit 1 ;;
+            esac
+            npx playwright install-deps "$install_browser"
+          done
+
+      - name: Run selected modules
+        shell: bash
+        env:
+          MODULES: ${{ inputs.modules }}
+          BROWSERS: ${{ inputs.browsers }}
+          PLAYWRIGHT_HTML_OPEN: never
+        run: |
+          args=()
+          IFS=',' read -ra folders <<< "$MODULES"
+          for folder in "${folders[@]}"; do
+            folder="$(echo "$folder" | xargs)"
+            [[ -n "$folder" ]] && args+=("$folder")
+          done
+          IFS=',' read -ra browsers <<< "$BROWSERS"
+          for browser in "${browsers[@]}"; do
+            browser="$(echo "$browser" | xargs)"
+            [[ -n "$browser" ]] && args+=("--project=$browser")
+          done
+          npx playwright test "${args[@]}" --reporter=line,html,allure-playwright
+
+      - name: Generate Allure HTML report
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d allure-results ] && find allure-results -type f -print -quit | grep -q .; then
+            npx --yes allure-commandline@2 generate allure-results --clean -o allure-report
+          else
+            echo "No Allure result files were generated; skipping the HTML report."
+          fi
+
+      - name: Upload HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-html-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload Playwright test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Allure results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results
+          path: allure-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload Allure HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-html-report
+          path: allure-report/
+          retention-days: 14
+          if-no-files-found: ignore
