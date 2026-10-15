@@ -97,7 +97,21 @@ jobs:
             [[ -n "$browser" ]] && args+=("--project=$browser")
           done
 
-          npx playwright test "${args[@]}" --reporter=html,junit,json,list
+          set +e
+          npx playwright test "${args[@]}" --reporter=line,html,junit,json,list,allure-playwright
+          test_status=$?
+          set -e
+          exit "$test_status"
+
+      - name: Generate Allure HTML report
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          if [ -d allure-results ] && find allure-results -type f -print -quit | grep -q .; then
+            npx --yes allure-commandline@2 generate allure-results --clean -o allure-report || echo "Allure HTML generation failed; preserving raw Allure results."
+          else
+            echo "No Allure result files were generated; skipping the HTML report."
+          fi
 
       - name: Upload HTML report
         if: ${{ !cancelled() }}
@@ -114,6 +128,24 @@ jobs:
         with:
           name: playwright-results
           path: reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Allure HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-html-report
+          path: allure-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Allure raw results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results
+          path: allure-results/
           if-no-files-found: ignore
           retention-days: 14
 
